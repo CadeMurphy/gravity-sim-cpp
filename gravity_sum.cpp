@@ -7,6 +7,22 @@
 
 float screenHeight = 600.0f;
 float screenWidth = 800.0f;
+const double G = 6.6743e-11; // m^3 kg^-1 s^-2
+const double METRES_PER_PIXEL = 1e6;
+
+double camX       = screenWidth*0.5;
+double camY       = screenHeight*0.5;
+double zoom       = 1.0;
+
+// camera motion settings
+const double panSpeed   = 200.0;    // pixels per second
+const double zoomFactor = 1.1;      // scroll wheel zoom step
+
+// scroll callback to adjust zoom
+void scroll_callback(GLFWwindow* window, double xoff, double yoff) {
+    if (yoff > 0) zoom /= zoomFactor;
+    else          zoom *= zoomFactor;
+}
 
 GLFWwindow* StartGLFW();
 
@@ -16,10 +32,13 @@ class Object {
 		std::vector<float> position;
 		std::vector<float> velocity;
 		float radius;
-		Object(std::vector<float> position, std::vector<float> velocity, float radius = 15.0f){
+		float mass;
+
+		Object(std::vector<float> position, std::vector<float> velocity, float mass, float radius = 15.0f){
 			this->position = position;
 			this->velocity = velocity;
 			this->radius = radius;
+			this->mass = mass;
 		}
 		
 		void accelerate(float x, float y, float dt){
@@ -78,25 +97,41 @@ class Object {
 int main(){
 	//Setup drawing ability
 	GLFWwindow* window = StartGLFW();
+	glfwSetScrollCallback(window, scroll_callback);
 	glfwMakeContextCurrent(window);
 	glViewport(0, 0, 800, 600);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	// map x from [0…800], y from [0…600] into clip-space automatically:
-	glOrtho(0.0, screenWidth, 0.0, screenHeight, -1.0, 1.0);
+
+	double halfW = (screenWidth  * 0.5) * zoom;
+	double halfH = (screenHeight * 0.5) * zoom;
+	glOrtho(
+	    camX - halfW,  camX + halfW,
+	    camY - halfH,  camY + halfH,
+	   -1.0, 1.0
+	);
+
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
 
 	std::vector<Object> objs = {
-		Object(std::vector<float>{400.0f, 800.0f}, std::vector<float>{0.0f, 0.0f}),
-		Object(std::vector<float>{400.0f, 500.0f}, std::vector<float>{0.0f, 0.0f})
-	};
+		Object(
+			{300.0f, 300.0f},    // x=400−100, y=300
+			{0.0f,  0.00011074f},// vx=0, vy=+0.00011074
+			7.35e22f             // mass in kg
+		    ),
+		    // B: 100 px right of centre, moving down at the same speed
+		    Object(
+			{500.0f, 300.0f},    // x=400+100, y=300
+			{0.0f, -0.00011074f},// vx=0, vy=−0.00011074
+			7.35e22f
+		    )
+			};
 
 
 	glfwSwapInterval(1);
 	double lastTime = glfwGetTime();
-	const float slowDown = 0.3f;   
 
 	//The render loop
 	while(!glfwWindowShouldClose(window)) {
@@ -106,11 +141,62 @@ int main(){
 		double realDt= now - lastTime;
 		lastTime     = now;
 
-		// convert seconds → “frames at 60 fps” and apply slowDown
-		float dt = float(realDt * 60.0 * slowDown);
+		glfwPollEvents();
+
+	   	// 3) handle camera pan keys
+		    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camY += panSpeed   * realDt;
+		    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camY -= panSpeed   * realDt;
+		    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camX -= panSpeed   * realDt;
+		    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camX += panSpeed   * realDt;
+
+		    // 4) rebuild the projection around (camX,camY) at zoom
+		    glMatrixMode(GL_PROJECTION);
+		    glLoadIdentity();
+		    double halfW = (screenWidth*0.5) * zoom;
+		    double halfH = (screenHeight*0.5)* zoom;
+		    glOrtho(
+		      camX - halfW, camX + halfW,
+		      camY - halfH, camY + halfH,
+		      -1.0, 1.0
+		    );
+		    glMatrixMode(GL_MODELVIEW);
+		    glLoadIdentity();
+
+		    // 5) clear and then run your physics+drawing
+		    glClear(GL_COLOR_BUFFER_BIT);
+
+
+		const float timeScale = 7 * 86400.0f;    // one real second = one simulated day
+		float dt = float(realDt * timeScale);
+
 
 		for(auto& obj : objs){
-			obj.accelerate(0.0f, -9.8f, dt);
+			for(auto& obj2 : objs){  
+				if (&obj2 == &obj) { continue; }
+
+				// 1) compute separation in metres
+			    double dx_m = (obj2.position[0] - obj.position[0]) * METRES_PER_PIXEL;
+			    double dy_m = (obj2.position[1] - obj.position[1]) * METRES_PER_PIXEL;
+			    double dist_m = std::hypot(dx_m, dy_m);
+			    if(dist_m < 1.0) continue;            // guard against zero
+
+			    // 2) unit direction
+			    double ux = dx_m/dist_m;
+			    double uy = dy_m/dist_m;
+
+			    // 3) gravitational accel magnitude (m/s²)
+			    double a = G * obj2.mass / (dist_m*dist_m);
+
+			    // 4) convert accel back to pixels/sec²
+			    double ax =  (a * ux) / METRES_PER_PIXEL;
+			    double ay =  (a * uy) / METRES_PER_PIXEL;
+
+			    // 5) apply it over real-time dt
+			    obj.accelerate((float)ax, (float)ay, dt);
+								
+			}
+
+
     			obj.updatePos(dt);
 		}
 
