@@ -26,7 +26,8 @@ LIBS     := -L$(LIB_DIR) \
             -lX11 \
             -lXrandr \
             -lXxf86vm \
-            -lXcursor
+            -lXcursor \
+	    -lGLU
 
 .PHONY: all clean
 
