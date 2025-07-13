@@ -17,15 +17,24 @@ const double METRES_PER_PIXEL = 1e6;
 
 //Camera Setup
 
-float yaw    = 0.0f;             // rotation around vertical
+float yaw    = 90.0f;             // rotation around vertical
 float pitch  = 0.0f;             // tilt up/down
 float dist   = 800.0f;           // how far the camera sits back
 const float cx = screenWidth/2;  // look-at centre X
 const float cy = screenHeight/2; // look-at centre Y
+// Compute cameraZ
+float fovRad = 60.0f * (M_PI/180.0f);
+float cameraZ = (screenWidth*0.5f) / std::tan(fovRad*0.5f);		 //
+glm::vec3 cameraPos   = glm::vec3(cx, cy, cameraZ);  // start up above the grid
+glm::vec3 cameraFront = glm::vec3(0,0,-1);
+glm::vec3 cameraUp    = glm::vec3(0,1, 0);
 
 
 
 GLFWwindow* StartGLFW();
+
+
+
 
 class Object {
 	public:
@@ -89,8 +98,26 @@ class Object {
 		}
 };
 
+float computeWell(const std::vector<Object>& objs,
+                  float x, float y) 
+{
+    float z = 0.0f;
+    const float Gscale = 1e-20f;    // tune this first
+    const float MAX_DIP = 150.0f;   // clamp after summing
+    for (auto &o : objs) {
+        float dx = x - o.position[0];
+        float dy = y - o.position[1];
+        float r  = std::sqrt(dx*dx + dy*dy);
 
-		
+        // 1) clamp to avoid singularity at r→0
+        r = std::max(r, o.radius);
+
+        // 2) Newtonian well
+        z += -Gscale * o.mass / r;
+    }
+    // 3) clamp the final depth
+    return std::max(z, -MAX_DIP);
+}		
 
 int main(){
 	//Setup drawing ability
@@ -101,6 +128,7 @@ int main(){
 	glDepthFunc(GL_LEQUAL);
 
 	//Lighting
+
 	// enable lighting and a single light source
 	glEnable(GL_LIGHTING);
 	glEnable(GL_LIGHT0);
@@ -130,9 +158,7 @@ int main(){
                0.1,
                2000.0);
 
-	// Compute cameraZ
-	float fovRad = 60.0f * (M_PI/180.0f);
-	float cameraZ = (screenWidth*0.5f) / std::tan(fovRad*0.5f);
+
 
 	// Initial view
 	glMatrixMode(GL_MODELVIEW);
@@ -172,30 +198,77 @@ int main(){
 		const float timeScale = 86400.0f;
 		float dtPhys = dtCam * timeScale;
 
-		//Camera Computing
-		// handle simple key input for yaw/pitch
-		const float camSpeed = 90.0f;
-		if(glfwGetKey(window, GLFW_KEY_LEFT ) == GLFW_PRESS)  yaw  -= camSpeed * dtCam;
-		if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)  yaw  += camSpeed * dtCam;
-		if(glfwGetKey(window, GLFW_KEY_UP   ) == GLFW_PRESS)  pitch = std::min(pitch+camSpeed*dtCam,  89.0f);
-		if(glfwGetKey(window, GLFW_KEY_DOWN ) == GLFW_PRESS)  pitch = std::max(pitch-camSpeed*dtCam, -89.0f);
+const float camSpeed = 300.0f; // px per second
 
-		// convert to radians
-		float yrad = glm::radians(yaw);
-		float prad = glm::radians(pitch);
+// 1) Update yaw/pitch from arrow keys (or mouse)
+if(glfwGetKey(window, GLFW_KEY_LEFT ) == GLFW_PRESS)  yaw   -= 90.0f * dtCam;
+if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)  yaw   += 90.0f * dtCam;
+if(glfwGetKey(window, GLFW_KEY_UP   ) == GLFW_PRESS)  pitch  = std::min(pitch + 90.0f * dtCam,  89.0f);
+if(glfwGetKey(window, GLFW_KEY_DOWN ) == GLFW_PRESS)  pitch  = std::max(pitch - 90.0f * dtCam, -89.0f);
 
-		// spherical → cartesian
-		float ex = cx + dist * std::cos(prad) * std::sin(yrad);
-		float ey = cy + dist * std::sin(prad);
-		float ez =            dist * std::cos(prad) * std::cos(yrad);
+// 2) Recompute front vector
+float yawRad   = glm::radians(yaw);
+float pitchRad = glm::radians(pitch);
+cameraFront.x = cos(yawRad) * cos(pitchRad);
+cameraFront.y = sin(pitchRad);
+cameraFront.z = sin(yawRad) * cos(pitchRad);
+cameraFront    = glm::normalize(cameraFront);
 
-		// reset view
-		glMatrixMode(GL_MODELVIEW);
-		glLoadIdentity();
-		gluLookAt(ex, ey, ez,
-			  cx, cy, 0.0f,
-			  0, 1, 0);
+// 3) Compute right (and you already have worldUp = (0,1,0))
+glm::vec3 cameraRight = glm::normalize(glm::cross(cameraFront, cameraUp));
 
+// 4) Handle WASD for movement
+if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) cameraPos += camSpeed * dtCam * cameraFront;
+if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) cameraPos -= camSpeed * dtCam * cameraFront;
+if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) cameraPos -= camSpeed * dtCam * cameraRight;
+if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) cameraPos += camSpeed * dtCam * cameraRight;
+
+// 5) Set the view
+glMatrixMode(GL_MODELVIEW);
+glLoadIdentity();
+glm::vec3 lookAt = cameraPos + cameraFront;
+gluLookAt(
+    cameraPos.x, cameraPos.y, cameraPos.z,
+    lookAt.x,    lookAt.y,    lookAt.z,
+    cameraUp.x,  cameraUp.y,  cameraUp.z
+);
+
+		//Flamm Paraboloid
+		// Grid resolution
+const int GRID_W = 40, GRID_H = 30;
+float stepX = screenWidth  / float(GRID_W);
+float stepY = screenHeight / float(GRID_H);
+
+// Draw horizontal lines
+glDisable(GL_LIGHTING);          // turn lighting off for lines
+glColor3f(0.4f,0.4f,0.4f);
+glLineWidth(1.0f);
+
+for(int iy = 0; iy <= GRID_H; ++iy) {
+    float y = iy * stepY;
+    glBegin(GL_LINE_STRIP);
+    for(int ix = 0; ix <= GRID_W; ++ix) {
+        float x = ix * stepX;
+        float z = computeWell(objs, x, y);
+        glVertex3f(x, y, z);
+    }
+    glEnd();
+}
+
+// Draw vertical lines
+for(int ix = 0; ix <= GRID_W; ++ix) {
+    float x = ix * stepX;
+    glBegin(GL_LINE_STRIP);
+    for(int iy = 0; iy <= GRID_H; ++iy) {
+        float y = iy * stepY;
+        float z = computeWell(objs, x, y);
+        glVertex3f(x, y, z);
+    }
+    glEnd();
+}
+
+glEnable(GL_LIGHTING);    
+	
 		// 1) compute accelerations from gravity
 		//
 		for (size_t i = 0; i < objs.size(); ++i) {
