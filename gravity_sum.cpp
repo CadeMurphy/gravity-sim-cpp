@@ -17,7 +17,7 @@ const double METRES_PER_PIXEL = 1e6;
 
 //Camera Setup
 
-float yaw    = 90.0f;             // rotation around vertical
+float yaw    = 00.0f;             // rotation around vertical
 float pitch  = 0.0f;             // tilt up/down
 float dist   = 800.0f;           // how far the camera sits back
 const float cx = screenWidth/2;  // look-at centre X
